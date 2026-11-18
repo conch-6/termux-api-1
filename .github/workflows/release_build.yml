@@ -1,9 +1,7 @@
 name: Release Build
 
 on:
-  push:
-    branches:
-      - master
+  # 不随 push 自动构建，只在手动点 Run workflow 时构建
   workflow_dispatch:
 
 permissions:
