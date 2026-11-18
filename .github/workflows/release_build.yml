@@ -1,7 +1,7 @@
 name: Release Build
 
 on:
-  # 不随 push 自动构建，只在手动点 Run workflow 时构建
+  # 移除了自动构建：只在需要时手动点 Run workflow
   workflow_dispatch:
 
 permissions:
