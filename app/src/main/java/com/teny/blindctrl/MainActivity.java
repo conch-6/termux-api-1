@@ -30,15 +30,16 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 public class MainActivity extends android.app.Activity
-        implements CtrlBus.Listener, LinkClient.Listener {
+        implements CtrlBus.Listener, LinkClient.Listener, VideoClient.Listener {
 
     private static final int REQ_NOTIFICATION = 101;
+    private static final int REQ_PROJECTION = 102;
     private static final int TAB_SLAVE = 0, TAB_MASTER = 1;
 
     /* ===== 被控页 ===== */
     private Switch swMaster;
-    private TextView tvA11y, tvBattery, tvNotify, tvServer, tvUrl, tvHint;
-    private Button btnA11y, btnBattery, btnNotify, btnLaunch, btnUrl;
+    private TextView tvA11y, tvBattery, tvNotify, tvServer, tvUrl, tvHint, tvCapture;
+    private Button btnA11y, btnBattery, btnNotify, btnLaunch, btnUrl, btnCapture;
     private boolean refreshing = false;
 
     /* ===== 主控页 / 双 Tab ===== */
@@ -47,11 +48,14 @@ public class MainActivity extends android.app.Activity
     private TextView tvLink;
     private TouchpadView pad;
     private LinkClient linkClient;
+    private VideoClient videoClient;
 
     private boolean linkConnected = false;
     private String linkDetail = "未连接";
     private boolean remoteEnabled = false;
     private boolean remoteA11y = false;
+    private boolean remoteVideo = false;
+    private boolean videoConnected = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -97,6 +101,8 @@ public class MainActivity extends android.app.Activity
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         tabSlave.setOnClickListener(v -> showTab(TAB_SLAVE));
         tabMaster.setOnClickListener(v -> showTab(TAB_MASTER));
+        // 长按底部「主控」Tab 不切页、直接弹地址框改被控端地址，改完立刻重连
+        tabMaster.setOnLongClickListener(v -> { showAddrDialog(false); return true; });
         root.addView(tabBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -143,7 +149,7 @@ public class MainActivity extends android.app.Activity
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("局域网远程触控（无画面回传）");
+        sub.setText("局域网远程触控 + 画面回传");
         sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         sub.setTextColor(0xFF888888);
         sub.setPadding(0, dp(4), 0, dp(20));
@@ -162,6 +168,7 @@ public class MainActivity extends android.app.Activity
         });
 
         root.addView(section("运行状态"));
+        tvCapture = statusLine(root, "画面回传");
         tvA11y = statusLine(root, "无障碍");
         tvBattery = statusLine(root, "电池优化");
         tvNotify = statusLine(root, "通知常驻");
@@ -186,32 +193,36 @@ public class MainActivity extends android.app.Activity
 
         root.addView(section("权限设置"));
         tvHint = new TextView(this);
-        tvHint.setText("开启总开关后，请把下面四项都设为允许；再在最近任务里把本应用下拉锁定一下，否则后台会被系统杀掉");
+        tvHint.setText("开启总开关后，请把下面五项都设为允许；再在最近任务里把本应用下拉锁定一下，否则后台会被系统杀掉");
         tvHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         tvHint.setTextColor(0xFF999999);
         tvHint.setPadding(0, 0, 0, dp(10));
         root.addView(tvHint, matchWrap());
 
-        btnA11y = makeButton("① 去开启无障碍服务");
+        btnCapture = makeButton("① 授权屏幕录制（主控才看得到画面）");
+        root.addView(btnCapture, matchWrap());
+        btnCapture.setOnClickListener(v -> requestProjection());
+
+        btnA11y = makeButton("② 去开启无障碍服务");
         root.addView(btnA11y, matchWrap());
         btnA11y.setOnClickListener(v -> openAccessibility());
 
-        btnBattery = makeButton("② 关闭电池优化（保活）");
+        btnBattery = makeButton("③ 关闭电池优化（保活）");
         root.addView(btnBattery, matchWrap());
         btnBattery.setOnClickListener(v -> openBattery());
 
-        btnNotify = makeButton("③ 允许通知 / 常驻");
+        btnNotify = makeButton("④ 允许通知 / 常驻");
         root.addView(btnNotify, matchWrap());
         btnNotify.setOnClickListener(v -> openNotification());
 
-        btnLaunch = makeButton("④ 允许后台自启动（保活）");
+        btnLaunch = makeButton("⑤ 允许后台自启动（保活）");
         root.addView(btnLaunch, matchWrap());
         btnLaunch.setOnClickListener(v -> openAutoStart());
 
         TextView note = new TextView(this);
-        note.setText("支持点击、滑动、长按，不读取屏幕内容。\n"
+        note.setText("支持点击、滑动、长按；屏幕画面会缩到 720p / 约 10fps 传给主控。\n"
                 + "两台手机连同一 WiFi，另一台装同一 APP 切到「主控」填上面地址即可。\n"
-                + "触摸板上的蓝色方框、橙色圆圈是按钮位置标注，照着手动点就行，APP 不会替你操作。\n"
+                + "授权屏幕录制后主控才看得到画面，不给也能照旧盲点。\n"
                 + "本应用不申请悬浮窗权限（无障碍本身即可后台运行）。");
         note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         note.setTextColor(0xFFAAAAAA);
@@ -240,7 +251,8 @@ public class MainActivity extends android.app.Activity
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         FrameLayout padHost = new FrameLayout(this);
-        padHost.setPadding(dp(16), dp(16), dp(16), dp(16));
+        // 不留内边距：触摸板按固定比例尽量撑满可用区域（比例不变、不超出视图）
+        padHost.setPadding(0, 0, 0, 0);
         pad = new TouchpadView(this);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -305,6 +317,10 @@ public class MainActivity extends android.app.Activity
         linkClient = new LinkClient(host, port, this);
         pad.setClient(linkClient);
         linkClient.start();
+        // 画面另走一条连接，连不上也不影响触摸
+        if (videoClient != null) videoClient.stop();
+        videoClient = new VideoClient(host, CtrlBus.PORT_VIDEO, this);
+        videoClient.start();
         linkDetail = "连接中… " + host + ":" + port;
         updateLinkUi();
     }
@@ -323,8 +339,11 @@ public class MainActivity extends android.app.Activity
             } else if (!remoteA11y) {
                 state = "● 已连上，但被控端无障碍没开";
                 color = 0xFFFFB74D;
+            } else if (remoteVideo && !videoConnected) {
+                state = "● 已就绪 · 画面连接中…";
+                color = 0xFF66BB6A;
             } else {
-                state = "● 已就绪 · 按住下面拖动";
+                state = "● 已就绪" + (remoteVideo ? " · 有画面" : " · 无画面（被控端未授权录屏）");
                 color = 0xFF66BB6A;
             }
             tvLink.setText(state);
@@ -348,9 +367,22 @@ public class MainActivity extends android.app.Activity
     }
 
     @Override
-    public void onRemoteState(boolean enabled, boolean accessibility) {
+    public void onRemoteState(boolean enabled, boolean accessibility, boolean video) {
         remoteEnabled = enabled;
         remoteA11y = accessibility;
+        remoteVideo = video;
+        updateLinkUi();
+    }
+
+    /* ===== VideoClient.Listener ===== */
+    @Override
+    public void onFrame(android.graphics.Bitmap bmp) {
+        if (pad != null) pad.setFrame(bmp);
+    }
+
+    @Override
+    public void onVideoState(boolean connected) {
+        videoConnected = connected;
         updateLinkUi();
     }
 
@@ -520,6 +552,39 @@ public class MainActivity extends android.app.Activity
         }
     }
 
+    /** 弹系统「开始录制或投放」授权框。授权后画面端口才能在主控连进来时真正抓屏。 */
+    private void requestProjection() {
+        try {
+            android.media.projection.MediaProjectionManager mpm =
+                    (android.media.projection.MediaProjectionManager)
+                            getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (mpm == null) {
+                Toast.makeText(this, "系统不支持屏幕录制", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            startActivityForResult(mpm.createScreenCaptureIntent(), REQ_PROJECTION);
+        } catch (Exception e) {
+            Toast.makeText(this, "打不开录屏授权：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_PROJECTION) return;
+        if (resultCode != RESULT_OK) {
+            Toast.makeText(this, "没给录屏权限，主控只能盲点", Toast.LENGTH_LONG).show();
+            refresh();
+            return;
+        }
+        if (ScreenStreamer.setProjection(this, resultCode, data)) {
+            Toast.makeText(this, "录屏已授权", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "录屏授权失败", Toast.LENGTH_LONG).show();
+        }
+        refresh();
+    }
+
     /* ---------- 状态检测 ---------- */
 
     private boolean isAccessibilityEnabled() {
@@ -573,6 +638,7 @@ public class MainActivity extends android.app.Activity
     @Override
     protected void onDestroy() {
         if (linkClient != null) linkClient.stop();
+        if (videoClient != null) videoClient.stop();
         super.onDestroy();
     }
 
@@ -594,6 +660,11 @@ public class MainActivity extends android.app.Activity
                 : "✗ 未启动"));
         tvUrl.setText(CtrlWebUi.hostIp(this) + ":" + CtrlBus.PORT
                 + "   ← 主控填这个");
+
+        tvCapture.setText("画面回传  " + (ScreenStreamer.hasProjection()
+                ? "✓ 已授权（缩到 720p / 10fps）"
+                : "✗ 未授权（主控看不到画面，只能盲点）"));
+        btnCapture.setEnabled(true);
 
         btnA11y.setEnabled(true);
         btnBattery.setEnabled(true);

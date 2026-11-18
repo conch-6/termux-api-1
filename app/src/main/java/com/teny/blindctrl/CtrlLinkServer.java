@@ -193,6 +193,7 @@ public class CtrlLinkServer {
             o.put("enabled", CtrlBus.isEnabled());
             o.put("accessibility", CtrlBus.isAccessibilityConnected());
             o.put("server", CtrlBus.isServerRunning());
+            o.put("video", ScreenStreamer.hasProjection());
             return "S " + o.toString();
         } catch (Exception e) {
             return "S {}";

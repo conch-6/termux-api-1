@@ -45,7 +45,7 @@ public class LinkClient {
 
     public interface Listener {
         void onLinkState(boolean connected, String detail);
-        void onRemoteState(boolean enabled, boolean accessibility);
+        void onRemoteState(boolean enabled, boolean accessibility, boolean video);
     }
 
     private static final int F_KEEP = 0;      // 保序，绝不丢
@@ -234,7 +234,8 @@ public class LinkClient {
                 JSONObject o = new JSONObject(line.substring(2));
                 boolean en = o.optBoolean("enabled", false);
                 boolean ax = o.optBoolean("accessibility", false);
-                ui.post(() -> { if (!dead) listener.onRemoteState(en, ax); });
+                boolean vid = o.optBoolean("video", false);
+                ui.post(() -> { if (!dead) listener.onRemoteState(en, ax, vid); });
             } catch (Exception ignored) {}
         }
     }

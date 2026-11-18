@@ -135,6 +135,8 @@ public class CtrlForegroundService extends Service {
         }
         acquireWakeLock();
         acquireWifiLock();
+        // 画面回传端口与指令端口一起托住；没授权时服务端只是空转等连接，不抓屏
+        ScreenStreamer.startServer(this);
 
         if (linkServer == null || !linkServer.isAlive()) {
             // 旧实例已经死了，关掉残留 socket 再重建
@@ -177,6 +179,7 @@ public class CtrlForegroundService extends Service {
             stopForeground(true);
         }
         started = false;
+        ScreenStreamer.stopServer();
         if (linkServer != null) {
             linkServer.stop();
             linkServer = null;

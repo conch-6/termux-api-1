@@ -15,25 +15,23 @@ import org.json.JSONObject;
  * 主控触摸板：竖屏 9:20（对应被控端逻辑坐标 1080x2400）。
  * 三种手势互斥，判定后即锁定，互不混用：
  *  - 点击：按下后没超过 DRAG_SLOP 位移就抬手 → 发一条 tap（被控端注入约 60ms 的短按）
- *  - 长按：仅当按下点落在触摸板最底下 1/3（逻辑 y ≥ 2/3·LH = 1600）才监测；
+ *  - 长按：任意位置都监测（已取消「只能在底部 1/3」的限制）；
  *    手指静止不动超过 LONG_PRESS_MS → 发一条 lstart（带按下坐标），此后不再发任何指令，
  *    由被控端自己一直按住；松手只发一条 lend（不带坐标），被控端收到才抬手。
  *    其余区域不排长按定时器，按住不动到抬手 = 点击，位移超阈值 = 滑动（只能点击/滑动）。
  *  - 滑动：按下后位移超过 DRAG_SLOP → 从起点 down 起，一路 move，抬手 up（实时流）
  * 长按「不实时流」：主控只发 lstart + lend 两条，中间不发心跳 move，避免主控心跳丢失 /
  * 被控端失联超时把语音「按住说话」的手势抬掉。结束信号不带坐标，因为长按中可能有极微小位移。
- * 长按区（底部 1/3）内按「按住时长」判定：手指静止（位移始终没超过 LONG_PRESS_SLOP）满
- * 300ms 即锁定为长按，保证输入法语音「按住说话」能稳稳按住；只要位移超过 LONG_PRESS_SLOP
- * 就立刻取消长按判定（手指在动 = 用户在滑动，不是长按）。
- * 顶部 2/3 根本不排长按定时器，慢起步滑动不会被误判成长按，按住不动抬手也只算点击。
+ * 全屏按「按住时长」判定：手指静止（位移始终没超过 LONG_PRESS_SLOP）满 300ms 即锁定为
+ * 长按，保证输入法语音「按住说话」能稳稳按住；只要位移超过 LONG_PRESS_SLOP 就立刻取消
+ * 长按判定（手指在动 = 用户在滑动，不是长按）。
  * 防「APP 自带长按」：只有位移超过 DRAG_SLOP 才把 down 发给被控端，down 之后紧跟的那条 move
  * 与 down 点相距必然 > DRAG_SLOP，一步就跨过 APP 自己的触摸阈值(约 8dp)，APP 自身的长按判定
  * 当场作废并持续到本次抬手，所以再慢的滑动也不会把 APP 里的文字长按出弹窗。
  * 重连后也不在原地补 down（原地补会重新激活 APP 长按），而是收起旧手势、等手指真正移动
  * 超过 DRAG_SLOP 再以「起点 + 大跨步 move」重新起手。
  * 长按与滑动绝不叠加（不会变成「长按后拖动」）：判为长按后不跟随移动。
- * 另把 6 个按钮的精确坐标以方形/圆形描在板上，并在 y=2/3 处画一条分界线标出长按区，
- * 纯视觉辅助，不拦截触摸、不代替点击。
+ * 背景可铺被控端实时画面（setFrame），等比缩放填满整块板，只做视觉参考，不拦截触摸。
  */
 public class TouchpadView extends View {
 
@@ -46,9 +44,6 @@ public class TouchpadView extends View {
      *  这样按下之后紧跟的那条 move 一步就跨过 APP 阈值，APP 自带的长按判定当场作废，
      *  慢速滑动再也不会被 APP 当成用户在长按文字。 */
     private static final float DRAG_SLOP = 36f;
-    /** 触摸板上下三等分，只有最底下这 1/3（逻辑 y ≥ 2/3·LH = 1600）才允许长按。 */
-    private static final float LONG_ZONE_FROM = 2f / 3f;
-
     /** 辅助标注：来自「临时」文件夹 6 个文档，坐标与大小都是 1080x2400 原始像素，勿改。 */
     private static final float[][] MARKS_RECT = {
             {724, 2298, 90, 82},     // 1.md
@@ -71,11 +66,12 @@ public class TouchpadView extends View {
     private final Paint markRect = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint markCircle = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint markFill = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint zoneLine = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint zoneText = new Paint(Paint.ANTI_ALIAS_FLAG);
-
     private LinkClient client;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /** 被控端画面：铺满触摸板当背景，缩放到刚好填满（保持比例、不裁切内容）。 */
+    private android.graphics.Bitmap frame;
+    private final Paint framePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final android.graphics.RectF frameDst = new android.graphics.RectF();
 
     private boolean pressing = false;     // 手指还在触摸板上
     private int mode = MODE_IDLE;         // 当前手势（判定后锁定）
@@ -85,7 +81,7 @@ public class TouchpadView extends View {
     private float pausedX = 0, pausedY = 0; // 滑动暂停态（重连后收手势）的起点
     private long downAt = 0;
     private long lastMoveAt = 0;
-    private boolean longZone = false;    // 本次按下的起点是否落在允许长按的底部 1/3
+    private boolean longZone = false;    // 现在全屏都可长按，恒为 true；保留以便沿用原判定流程
     private boolean pendingLongEnd = false; // 长按已松手、lend 可能因断连没发出，重连后补发
 
     /** 静止心跳：仅滑动期间持续发 move，防止被控端失联保险自动抬手。
@@ -136,16 +132,16 @@ public class TouchpadView extends View {
         markCircle.setStyle(Paint.Style.STROKE);
         markCircle.setStrokeWidth(dp(2));
         markFill.setStyle(Paint.Style.FILL);
-        zoneLine.setColor(0x8864B5F6);
-        zoneLine.setStyle(Paint.Style.STROKE);
-        zoneLine.setStrokeWidth(dp(1.5f));
-        zoneText.setColor(0x8864B5F6);
-        zoneText.setTextAlign(Paint.Align.CENTER);
-        zoneText.setTextSize(dp(11));
         setClickable(true);
     }
 
     public void setClient(LinkClient c) { this.client = c; }
+
+    /** 收到一帧新画面：替换旧帧并重绘。旧帧不再引用，交给 GC。 */
+    public void setFrame(android.graphics.Bitmap b) {
+        frame = b;
+        invalidate();
+    }
 
     /** 强制 9:20 竖屏，适配可用空间（取能放下的最大尺寸）。 */
     @Override
@@ -166,6 +162,15 @@ public class TouchpadView extends View {
         int w = getWidth(), h = getHeight();
         canvas.drawRoundRect(2, 2, w - 2, h - 2, dp(14), dp(14), bg);
 
+        // 画面背景：等比缩放铺满整块触摸板（宽高比不同就留边，绝不裁切成看不清）
+        if (frame != null && !frame.isRecycled()) {
+            float fw = frame.getWidth(), fh = frame.getHeight();
+            float s = Math.min(w / fw, h / fh);
+            float dw = fw * s, dh = fh * s;
+            frameDst.set((w - dw) / 2f, (h - dh) / 2f, (w + dw) / 2f, (h + dh) / 2f);
+            canvas.drawBitmap(frame, null, frameDst, framePaint);
+        }
+
         // 辅助标注：逻辑坐标线性铺到板上，与 toLogical 完全互逆，位置精确到像素
         float sx = w / LW, sy = h / LH;
         markFill.setColor(0x2264B5F6);
@@ -184,11 +189,6 @@ public class TouchpadView extends View {
         }
 
         canvas.drawRoundRect(2, 2, w - 2, h - 2, dp(14), dp(14), border);
-
-        // 长按区分界线：触摸板上下三等分，最底下 1/3 才允许长按，画条线辅助
-        float lineY = h * LONG_ZONE_FROM;
-        canvas.drawLine(0, lineY, w, lineY, zoneLine);
-        canvas.drawText("长按区", w / 2f, lineY + dp(15), zoneText);
 
         if (pressing && mode != MODE_PENDING) {
             float px = curX / LW * w;
@@ -215,7 +215,7 @@ public class TouchpadView extends View {
                 pressing = true;
                 mode = MODE_PENDING;       // 先不发任何指令：等抬手(点击)/超时(长按)/位移(滑动)
                 lastMoveAt = 0;
-                longZone = downY >= LH * LONG_ZONE_FROM;   // 仅底部 1/3 才监测长按
+                longZone = true;   // 全屏都能长按，不再限制在底部 1/3
                 pendingLongEnd = false;
                 handler.removeCallbacks(keepalive);
                 handler.removeCallbacks(longPress);
@@ -344,6 +344,14 @@ public class TouchpadView extends View {
 
     private float[] toLogical(float px, float py) {
         float w = getWidth(), h = getHeight();
+        // 有画面时按「画面实际铺开的区域」换算，避免留边导致坐标整体偏移
+        if (frame != null && !frame.isRecycled() && frameDst.width() > 1 && frameDst.height() > 1) {
+            float x = (px - frameDst.left) / frameDst.width() * LW;
+            float y = (py - frameDst.top) / frameDst.height() * LH;
+            if (x < 0) x = 0; if (x > LW) x = LW;
+            if (y < 0) y = 0; if (y > LH) y = LH;
+            return new float[]{x, y};
+        }
         float x = w > 0 ? px / w * LW : 0;
         float y = h > 0 ? py / h * LH : 0;
         if (x < 0) x = 0; if (x > LW) x = LW;

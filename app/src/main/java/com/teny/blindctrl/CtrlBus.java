@@ -7,6 +7,8 @@ import android.content.SharedPreferences;
 public final class CtrlBus {
 
     public static final int PORT = 8898;
+    /** 画面回传独立端口：和指令分开，画面卡住/断流不影响触摸指令 */
+    public static final int PORT_VIDEO = 8899;
 
     private static final String PREF = "blindctrl";
     private static final String KEY_ENABLED = "enabled";
