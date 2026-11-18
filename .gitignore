@@ -34,3 +34,7 @@ Thumbs.db
 
 # Temp/backup files
 *~
+
+# Release signing (provided via CI secrets)
+*.jks
+!app/testkey_untrusted.jks
