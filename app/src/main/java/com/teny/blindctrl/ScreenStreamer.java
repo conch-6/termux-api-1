@@ -44,6 +44,14 @@ public final class ScreenStreamer {
 
     private static volatile MediaProjection sProjection;
     private static volatile boolean sProjectionStopped = true;
+    /** 最近一次失败原因，给界面显示用（技术小白看不到 logcat）。 */
+    public static volatile String lastError = null;
+
+    public static String statusText() {
+        if (hasProjection()) return "✓ 已授权（缩到 720p / 10fps）";
+        if (sProjection != null && sProjectionStopped) return "✗ " + (lastError == null ? "授权已失效" : lastError);
+        return "✗ 未授权（主控看不到画面，只能盲点）";
+    }
     private static VideoServer sServer;
 
     private ScreenStreamer() {}
@@ -55,15 +63,26 @@ public final class ScreenStreamer {
             MediaProjectionManager mpm = (MediaProjectionManager)
                     ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
             if (mpm == null) return false;
-            MediaProjection mp = mpm.getMediaProjection(resultCode, data);
-            if (mp == null) return false;
-            // 系统收回授权（用户停止投放/被别的应用接管）时标记失效，主控那边自然回落到无画面
-            mp.registerCallback(new MediaProjection.Callback() {
-                @Override public void onStop() { sProjectionStopped = true; }
-            }, new Handler(android.os.Looper.getMainLooper()));
+            final MediaProjection mp = mpm.getMediaProjection(resultCode, data);
+            if (mp == null) { lastError = "系统没给出录屏通道"; return false; }
+            // 先接管，再注册回调：回调里只认「自己这一次」的实例，
+            // 否则停掉旧投影时会把新投影的标记一起打成失效（重授权必现假 ❌）。
             MediaProjection old = sProjection;
             sProjection = mp;
             sProjectionStopped = false;
+            lastError = null;
+            mp.registerCallback(new MediaProjection.Callback() {
+                @Override public void onStop() {
+                    if (sProjection == mp) {
+                        sProjectionStopped = true;
+                        lastError = "系统收回了录屏授权";
+                        Log.w(TAG, "MediaProjection 被系统停止");
+                        // 这次 token 已经废了，虚拟显示必须拆掉，等用户重新授权再建
+                        VideoServer sv = sServer;
+                        if (sv != null) sv.releaseCapture();
+                    }
+                }
+            }, new Handler(android.os.Looper.getMainLooper()));
             if (old != null) {
                 try { old.stop(); } catch (Exception ignored) {}
             }
@@ -72,6 +91,7 @@ public final class ScreenStreamer {
             if (sv != null) sv.ensureCapture();
             return true;
         } catch (Exception e) {
+            lastError = "取录屏通道异常：" + e.getMessage();
             Log.w(TAG, "取 MediaProjection 失败: " + e.getMessage());
             return false;
         }
@@ -182,7 +202,10 @@ public final class ScreenStreamer {
             if (s != null) {
                 try { s.close(); } catch (Exception ignored) {}
             }
-            releaseCapture();
+            // 故意不销毁 VirtualDisplay：安卓 10+ 的录屏 token 只能建一次虚拟显示，
+            // 断开就 release 的话，主控再连上来重建会直接失败（界面显示未授权）。
+            // 没人看的时候 onFrame 会直接丢帧，几乎不耗电。
+            pending.set(null);
         }
 
         /** 授权晚到时的补救：主控已连且刚拿到权限，立刻开抓。 */
@@ -208,12 +231,13 @@ public final class ScreenStreamer {
                         reader.getSurface(), null, handler);
                 Log.i(TAG, "开始回传画面 " + w + "x" + h);
             } catch (Exception e) {
+                lastError = "建虚拟屏失败：" + e.getMessage();
                 Log.w(TAG, "建 VirtualDisplay 失败: " + e.getMessage());
                 releaseCapture();
             }
         }
 
-        private synchronized void releaseCapture() {
+        synchronized void releaseCapture() {
             if (vd != null) {
                 try { vd.release(); } catch (Exception ignored) {}
                 vd = null;
@@ -235,6 +259,7 @@ public final class ScreenStreamer {
             try { img = r.acquireLatestImage(); } catch (Exception e) { return; }
             if (img == null) return;
             try {
+                if (client == null) return;   // 没人看就不编码
                 long now = System.currentTimeMillis();
                 if (now - lastFrameAt < FRAME_MS) return;
                 lastFrameAt = now;

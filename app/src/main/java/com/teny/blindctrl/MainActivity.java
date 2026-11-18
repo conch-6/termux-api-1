@@ -580,7 +580,9 @@ public class MainActivity extends android.app.Activity
         if (ScreenStreamer.setProjection(this, resultCode, data)) {
             Toast.makeText(this, "录屏已授权", Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "录屏授权失败", Toast.LENGTH_LONG).show();
+            String why = ScreenStreamer.lastError;
+            Toast.makeText(this, "录屏授权失败" + (why == null ? "" : "：" + why),
+                    Toast.LENGTH_LONG).show();
         }
         refresh();
     }
@@ -661,9 +663,7 @@ public class MainActivity extends android.app.Activity
         tvUrl.setText(CtrlWebUi.hostIp(this) + ":" + CtrlBus.PORT
                 + "   ← 主控填这个");
 
-        tvCapture.setText("画面回传  " + (ScreenStreamer.hasProjection()
-                ? "✓ 已授权（缩到 720p / 10fps）"
-                : "✗ 未授权（主控看不到画面，只能盲点）"));
+        tvCapture.setText("画面回传  " + ScreenStreamer.statusText());
         btnCapture.setEnabled(true);
 
         btnA11y.setEnabled(true);
