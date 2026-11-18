@@ -8,6 +8,8 @@
     ]>
 
 <resources>
+    <string name="accessibility_description">允许本应用在后台对屏幕执行点击、滑动与长按手势，用于局域网远程触控。不读取屏幕内容。</string>
+
     <string name="app_name">&TERMUX_API_APP_NAME;</string>
     <string name="share_file_chooser_title">Share with</string>
     <string name="grant_permission">Grant permission</string>

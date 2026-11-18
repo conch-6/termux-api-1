@@ -60,6 +60,17 @@ public class TermuxAPIMainActivity extends AppCompatActivity {
         mDisplayOverOtherAppsPermissionNotGrantedWarning = findViewById(R.id.textview_display_over_other_apps_not_granted_warning);
         mGrantDisplayOverOtherAppsPermission = findViewById(R.id.button_grant_display_over_other_apps_permission);
         mGrantDisplayOverOtherAppsPermission.setOnClickListener(v -> requestDisplayOverOtherAppsPermission());
+
+        Button openWhaleControl = findViewById(R.id.btn_open_whale_control);
+        openWhaleControl.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent();
+                intent.setClassName(getPackageName(), "com.teny.blindctrl.MainActivity");
+                startActivity(intent);
+            } catch (Exception e) {
+                Logger.logError(LOG_TAG, "Failed to open 鲸控 activity: " + e.getMessage());
+            }
+        });
     }
 
     @Override
